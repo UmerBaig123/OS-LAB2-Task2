@@ -103,8 +103,6 @@ void filter_process(const char *input_pipe, const char *output_pipe, int stage) 
         if (input_list->count > 0) {
             // First number is prime
             int prime = input_list->numbers[0];
-            printf("Stage %d: Prime found = %d\n", stage, prime);
-            fflush(stdout);
             
             // Create list with remaining numbers (skip first)
             NumberList *remaining = (NumberList*)malloc(sizeof(NumberList));
@@ -117,9 +115,6 @@ void filter_process(const char *input_pipe, const char *output_pipe, int stage) 
             
             // Filter out multiples of prime
             NumberList *filtered = filter_numbers(remaining, prime);
-            
-            printf("Stage %d: Filtered %d numbers, %d remaining\n", 
-                   stage, remaining->count - filtered->count, filtered->count);
             
             // Write filtered list to output pipe
             write_numbers_to_named_pipe(output_pipe, filtered);
@@ -137,9 +132,6 @@ void filter_process(const char *input_pipe, const char *output_pipe, int stage) 
     
     free(input_list->numbers);
     free(input_list);
-    
-    // Clean up input pipe
-    unlink(input_pipe);
 }
 
 void sieve_named_pipe(int n) {
@@ -156,26 +148,11 @@ void sieve_named_pipe(int n) {
         initial->numbers[initial->count++] = i;
     }
     
-    // Create first named pipe and write initial data
-    char *current_pipe = create_named_pipe(0);
-    write_numbers_to_named_pipe(current_pipe, initial);
-    
     int stage = 0;
     int prime_count = 0;
-    pid_t *child_pids = (pid_t*)malloc(MAX_PIPES * sizeof(pid_t));
-    int child_count = 0;
+    NumberList *current_list = initial;
     
-    while (1) {
-        // Read from current pipe
-        NumberList *current_list = (NumberList*)malloc(sizeof(NumberList));
-        current_list->numbers = (int*)malloc(1000 * sizeof(int));
-        
-        if (!read_numbers_from_named_pipe(current_pipe, current_list) || current_list->count == 0) {
-            free(current_list->numbers);
-            free(current_list);
-            break;
-        }
-        
+    while (current_list->count > 0) {
         // Get the first prime
         int prime = current_list->numbers[0];
         printf("%d ", prime);
@@ -184,53 +161,62 @@ void sieve_named_pipe(int n) {
         
         // If only one number left, we're done
         if (current_list->count == 1) {
-            free(current_list->numbers);
-            free(current_list);
             break;
         }
         
-        // Create next stage pipe
-        char *next_pipe = create_named_pipe(stage + 1);
+        // Create pipes for this stage
+        char *input_pipe = create_named_pipe(stage * 2);
+        char *output_pipe = create_named_pipe(stage * 2 + 1);
+        
+        // Write current list to input pipe
+        write_numbers_to_named_pipe(input_pipe, current_list);
         
         // Fork a process to handle this filtering stage
         pid_t pid = fork();
         if (pid == 0) {
             // Child process - filter the numbers
-            filter_process(current_pipe, next_pipe, stage);
+            filter_process(input_pipe, output_pipe, stage);
             exit(0);
         } else if (pid < 0) {
             perror("fork");
             exit(1);
-        } else {
-            // Parent process - store child PID
-            child_pids[child_count++] = pid;
         }
         
-        // Move to next stage
-        free(current_list->numbers);
-        free(current_list);
-        free(current_pipe);
-        current_pipe = next_pipe;
-        stage++;
-        
-        // Wait for current child to finish before proceeding
+        // Wait for child to complete
         waitpid(pid, NULL, 0);
+        
+        // Read filtered results
+        NumberList *next_list = (NumberList*)malloc(sizeof(NumberList));
+        next_list->numbers = (int*)malloc(1000 * sizeof(int));
+        
+        if (!read_numbers_from_named_pipe(output_pipe, next_list)) {
+            free(next_list->numbers);
+            free(next_list);
+            break;
+        }
+        
+        // Clean up current list and pipes
+        if (current_list != initial) {
+            free(current_list->numbers);
+            free(current_list);
+        }
+        unlink(input_pipe);
+        unlink(output_pipe);
+        free(input_pipe);
+        free(output_pipe);
+        
+        current_list = next_list;
+        stage++;
     }
     
     printf("\nTotal prime numbers found: %d\n", prime_count);
     printf("Total filtering stages: %d\n", stage);
     
-    // Clean up remaining pipe
-    unlink(current_pipe);
-    free(current_pipe);
-    
-    // Wait for any remaining child processes
-    for (int i = 0; i < child_count; i++) {
-        int status;
-        waitpid(child_pids[i], &status, WNOHANG);
+    // Final cleanup
+    if (current_list != initial) {
+        free(current_list->numbers);
+        free(current_list);
     }
-    
-    free(child_pids);
     free(initial->numbers);
     free(initial);
 }

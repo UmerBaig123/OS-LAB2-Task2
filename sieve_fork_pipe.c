@@ -52,10 +52,8 @@ void process_stage(int input_pipe, int output_pipe) {
     
     if (read_numbers_from_pipe(input_pipe, input_list)) {
         if (input_list->count > 0) {
-            // First number is prime
+            // First number is prime - but don't print here, let parent handle printing
             int prime = input_list->numbers[0];
-            printf("%d ", prime);
-            fflush(stdout);
              
             NumberList *remaining = (NumberList*)malloc(sizeof(NumberList));
             remaining->numbers = (int*)malloc(input_list->count * sizeof(int));
@@ -136,6 +134,7 @@ void sieve_fork_pipe_sequential(int n) {
         
         pid = fork();
         if (pid == 0) {
+            // Child process - don't print, just filter and pass data
             close(pipe_out[0]);
             
             NumberList *remaining = (NumberList*)malloc(sizeof(NumberList));
