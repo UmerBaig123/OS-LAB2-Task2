@@ -1,203 +1,236 @@
+// sieve_fixed.c
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdbool.h>
-#include <string.h>
 #include <unistd.h>
 #include <sys/wait.h>
+#include <errno.h>
+#include <string.h>
 #include <time.h>
 
 typedef struct {
     int *numbers;
     int count;
 } NumberList;
- 
-int read_numbers_from_pipe(int pipe_fd, NumberList *list) {
-    if (read(pipe_fd, &list->count, sizeof(int)) <= 0) {
-        return 0; // No more data
+
+/* Robust write: ensure all bytes written (handles EINTR & partial writes) */
+ssize_t write_all(int fd, const void *buf, size_t count) {
+    const char *p = (const char*)buf;
+    size_t left = count;
+    while (left > 0) {
+        ssize_t w = write(fd, p, left);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        }
+        left -= (size_t)w;
+        p += w;
     }
-    
-    if (list->count <= 0) {
-        return 0;
-    }
-    int bytes_read = read(pipe_fd, list->numbers, list->count * sizeof(int));
-    return bytes_read > 0;
+    return (ssize_t)count;
 }
 
-// Function to write numbers to pipe
-void write_numbers_to_pipe(int pipe_fd, NumberList *list) {
-    write(pipe_fd, &list->count, sizeof(int));
+/* Robust read: try to read exactly count bytes (returns bytes read or -1 on error) */
+ssize_t read_all(int fd, void *buf, size_t count) {
+    char *p = (char*)buf;
+    size_t left = count;
+    while (left > 0) {
+        ssize_t r = read(fd, p, left);
+        if (r < 0) {
+            if (errno == EINTR) continue;
+            return -1;
+        } else if (r == 0) {
+            // EOF reached
+            return (ssize_t)(count - left);
+        }
+        left -= (size_t)r;
+        p += r;
+    }
+    return (ssize_t)count;
+}
+
+/* Send a NumberList through fd: first int count, then array of ints */
+int send_list(int fd, NumberList *list) {
+    if (write_all(fd, &list->count, sizeof(int)) != sizeof(int)) return -1;
     if (list->count > 0) {
-        write(pipe_fd, list->numbers, list->count * sizeof(int));
+        size_t bytes = list->count * sizeof(int);
+        if (write_all(fd, list->numbers, bytes) != (ssize_t)bytes) return -1;
     }
+    return 0;
 }
 
-// Filter function - removes multiples of prime
-NumberList* filter_numbers(NumberList *input, int prime) {
-    NumberList *output = (NumberList*)malloc(sizeof(NumberList));
-    output->numbers = (int*)malloc(input->count * sizeof(int));
-    output->count = 0;
-    
-    for (int i = 0; i < input->count; i++) {
-        if (input->numbers[i] % prime != 0) {
-            output->numbers[output->count++] = input->numbers[i];
-        }
+/* Receive a NumberList from fd; caller must ensure list->numbers points to buffer or NULL */
+int recv_list(int fd, NumberList *list) {
+    int cnt;
+    ssize_t r = read_all(fd, &cnt, sizeof(int));
+    if (r <= 0) return -1; // EOF or error
+    list->count = cnt;
+    if (list->count > 0) {
+        int *buf = realloc(list->numbers, list->count * sizeof(int));
+        if (!buf) return -1;
+        list->numbers = buf;
+        size_t bytes = list->count * sizeof(int);
+        r = read_all(fd, list->numbers, bytes);
+        if (r != (ssize_t)bytes) return -1;
     }
-    
-    return output;
+    return 0;
 }
- 
-void process_stage(int input_pipe, int output_pipe) {
-    NumberList *input_list = (NumberList*)malloc(sizeof(NumberList));
-    input_list->numbers = (int*)malloc(1000 * sizeof(int));
-    
-    if (read_numbers_from_pipe(input_pipe, input_list)) {
-        if (input_list->count > 0) {
-            // First number is prime - but don't print here, let parent handle printing
-            int prime = input_list->numbers[0];
-             
-            NumberList *remaining = (NumberList*)malloc(sizeof(NumberList));
-            remaining->numbers = (int*)malloc(input_list->count * sizeof(int));
-            remaining->count = input_list->count - 1;
-            
-            for (int i = 1; i < input_list->count; i++) {
-                remaining->numbers[i-1] = input_list->numbers[i];
-            }
-             
-            NumberList *filtered = filter_numbers(remaining, prime);
-             
-            write_numbers_to_pipe(output_pipe, filtered);
-            
-            free(remaining->numbers);
-            free(remaining);
-            free(filtered->numbers);
-            free(filtered);
+
+/* Filter helper: returns newly allocated NumberList (caller frees) */
+NumberList *filter_numbers(NumberList *input, int prime) {
+    NumberList *out = malloc(sizeof(NumberList));
+    if (!out) return NULL;
+    out->numbers = malloc(input->count * sizeof(int));
+    out->count = 0;
+    for (int i = 0; i < input->count; ++i) {
+        if (input->numbers[i] % prime != 0) {
+            out->numbers[out->count++] = input->numbers[i];
         }
     }
-    
-    free(input_list->numbers);
-    free(input_list);
-    close(input_pipe);
-    close(output_pipe);
+    return out;
 }
 
 void sieve_fork_pipe_sequential(int n) {
-    printf("Prime numbers up to %d:\n", n);
-    
-    // Initialize the first list with numbers from 2 to n
-    NumberList *initial = (NumberList*)malloc(sizeof(NumberList));
-    initial->numbers = (int*)malloc((n - 1) * sizeof(int));
-    initial->count = 0;
-    
-    for (int i = 2; i <= n; i++) {
-        initial->numbers[initial->count++] = i;
-    }
-    
-    NumberList *current_list = initial;
+    printf("=== Pipe-based Sequential Sieve (Fixed) ===\n");
+    printf("Finding primes from 2 to %d\n", n);
+    printf("Prime numbers found:\n");
+
+    // initial list 2..n
+    NumberList *current = malloc(sizeof(NumberList));
+    if (!current) { perror("malloc"); exit(1); }
+    current->count = n - 1;
+    current->numbers = malloc(current->count * sizeof(int));
+    if (!current->numbers) { perror("malloc"); exit(1); }
+    for (int i = 0; i < current->count; ++i) current->numbers[i] = 2 + i;
+
     int prime_count = 0;
-    
-    while (current_list->count > 0) {
-        // Get the first number as prime
-        int prime = current_list->numbers[0];
-        printf("%d ", prime);
-        prime_count++;
-        if (prime_count % 10 == 0) printf("\n");
-        
-        // If only one number left, we're done
-        if (current_list->count == 1) {
-            break;
-        }
-        
-        // Create pipe for filtering
-        int pipe_fd[2];
-        if (pipe(pipe_fd) == -1) {
-            perror("pipe");
-            exit(1);
-        }
-        
+
+    while (current->count > 0) {
+        // Create pipes: parent->child (p2c) and child->parent (c2p)
+        int p2c[2];
+        int c2p[2];
+        if (pipe(p2c) == -1) { perror("pipe p2c"); exit(1); }
+        if (pipe(c2p) == -1) { perror("pipe c2p"); exit(1); }
+
         pid_t pid = fork();
-        if (pid == 0) {
-            // Child process - filter the numbers
-            close(pipe_fd[0]); // Close read end
-            
-            // Create remaining numbers (skip the prime)
-            NumberList *remaining = (NumberList*)malloc(sizeof(NumberList));
-            remaining->numbers = (int*)malloc(current_list->count * sizeof(int));
-            remaining->count = current_list->count - 1;
-            
-            for (int i = 1; i < current_list->count; i++) {
-                remaining->numbers[i-1] = current_list->numbers[i];
-            }
-            
-            // Filter out multiples of prime
-            NumberList *filtered = filter_numbers(remaining, prime);
-            
-            // Send filtered results back
-            write_numbers_to_pipe(pipe_fd[1], filtered);
-            
-            free(remaining->numbers);
-            free(remaining);
-            free(filtered->numbers);
-            free(filtered);
-            close(pipe_fd[1]);
-            exit(0);
-        } else if (pid < 0) {
+        if (pid < 0) {
             perror("fork");
             exit(1);
         }
-        
-        // Parent process
-        close(pipe_fd[1]); // Close write end
-        waitpid(pid, NULL, 0); // Wait for child to complete
-        
-        // Read filtered results
-        NumberList *new_list = (NumberList*)malloc(sizeof(NumberList));
-        new_list->numbers = (int*)malloc(n * sizeof(int));
-        
-        if (read_numbers_from_pipe(pipe_fd[0], new_list) && new_list->count > 0) {
-            // Free old list if it's not the initial one
-            if (current_list != initial) {
-                free(current_list->numbers);
-                free(current_list);
+
+        if (pid == 0) {
+            /* CHILD */
+            // close unused ends
+            close(p2c[1]); // parent write end
+            close(c2p[0]); // parent read end
+
+            // Child reads the list from parent
+            NumberList in;
+            in.numbers = malloc(1);
+            in.count = 0;
+            if (recv_list(p2c[0], &in) != 0) {
+                // nothing to do
+                free(in.numbers);
+                close(p2c[0]);
+                close(c2p[1]);
+                _exit(0);
             }
-            current_list = new_list;
+
+            if (in.count <= 0) {
+                free(in.numbers);
+                close(p2c[0]);
+                close(c2p[1]);
+                _exit(0);
+            }
+
+            // The first number observed by child is its prime
+            int prime = in.numbers[0];
+            // Print prime exactly once here in the child
+            printf("%d ", prime);
+            fflush(stdout);
+
+            // Build remaining list (skip first element)
+            NumberList remaining;
+            remaining.count = in.count - 1;
+            remaining.numbers = NULL;
+            if (remaining.count > 0) {
+                remaining.numbers = malloc(remaining.count * sizeof(int));
+                for (int i = 1; i < in.count; ++i) remaining.numbers[i-1] = in.numbers[i];
+            }
+
+            // Filter multiples of prime and send filtered list back to parent
+            NumberList *filtered = filter_numbers(&remaining, prime);
+            // Send filtered (may have count 0)
+            send_list(c2p[1], filtered);
+
+            // cleanup
+            if (remaining.numbers) free(remaining.numbers);
+            free(filtered->numbers);
+            free(filtered);
+            free(in.numbers);
+
+            // close FDs and exit
+            close(p2c[0]);
+            close(c2p[1]);
+            _exit(0);
         } else {
-            // No more numbers to process
-            free(new_list->numbers);
-            free(new_list);
-            break;
+            /* PARENT */
+            // close unused ends
+            close(p2c[0]); // child read end
+            close(c2p[1]); // child write end
+
+            // Parent sends the current list to the child
+            if (send_list(p2c[1], current) != 0) {
+                fprintf(stderr, "Failed to send list to child\n");
+                close(p2c[1]);
+                close(c2p[0]);
+                waitpid(pid, NULL, 0);
+                break;
+            }
+            // done writing: close write end so child sees EOF if needed
+            close(p2c[1]);
+
+            // Wait for child to finish generating filtered list
+            waitpid(pid, NULL, 0);
+
+            // Parent reads filtered list from child
+            NumberList next;
+            next.numbers = malloc(1);
+            next.count = 0;
+            if (recv_list(c2p[0], &next) != 0) {
+                // no more numbers (or error)
+                free(next.numbers);
+                close(c2p[0]);
+                break;
+            }
+            close(c2p[0]);
+
+            // Replace current with next (child removed the prime and filtered)
+            free(current->numbers);
+            free(current);
+            current = malloc(sizeof(NumberList));
+            current->count = next.count;
+            current->numbers = next.numbers;
+
+            prime_count++;
+            // continue loop until current->count == 0
         }
-        
-        close(pipe_fd[0]);
     }
-    
-    printf("\nTotal prime numbers found: %d\n", prime_count);
-    
-    // Clean up
-    if (current_list == initial) {
-        free(initial->numbers);
-        free(initial);
-    } else {
-        free(initial->numbers);
-        free(initial);
-        free(current_list->numbers);
-        free(current_list);
+
+    printf("\nTotal primes found (approx): %d\n", prime_count);
+
+    if (current) {
+        if (current->numbers) free(current->numbers);
+        free(current);
     }
 }
 
-int main() {
-    int n = 1000; // Fixed to 1000 as per requirement
-    clock_t start, end;
-    double cpu_time_used;
-    
-    printf("=== Sequential Filter Sieve (Fork and Pipe) ===\n");
-    printf("Finding primes from 2 to %d\n", n);
-    
-    start = clock();
+int main(void) {
+    int n = 1000; // fixed as requested
+
+    clock_t start = clock();
     sieve_fork_pipe_sequential(n);
-    end = clock();
-    
-    cpu_time_used = ((double) (end - start)) / CLOCKS_PER_SEC;
+    clock_t end = clock();
+
+    double cpu_time_used = ((double)(end - start)) / CLOCKS_PER_SEC;
     printf("Time taken: %f seconds\n", cpu_time_used);
-    
     return 0;
 }
