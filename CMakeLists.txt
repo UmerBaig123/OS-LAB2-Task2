@@ -33,9 +33,9 @@ endif()
 add_executable(sieve_iterative sieve_iterative.c)
 target_compile_definitions(sieve_iterative PRIVATE)
 
-# Executable: Pthread Implementation
-add_executable(sieve_pthread sieve_pthread.c)
-target_link_libraries(sieve_pthread Threads::Threads)
+# Executable: Pthread Implementation (commented out - source file not available)
+# add_executable(sieve_pthread sieve_pthread.c)
+# target_link_libraries(sieve_pthread Threads::Threads)
 
 # Unix/Linux only executables
 if(BUILD_UNIX_VERSIONS)
