@@ -9,6 +9,8 @@
 #include <time.h>
 #include <errno.h>
 
+#define _GNU_SOURCE  // For usleep on some systems
+
 #define MAX_PIPES 100
 #define PIPE_NAME_PREFIX "/tmp/sieve_pipe_"
 
@@ -66,7 +68,8 @@ void write_numbers_to_named_pipe(const char *pipe_name, NumberList *list) {
     if (fd == -1) {
         if (errno == ENXIO) {
             // No reader yet, wait a bit and try blocking mode
-            usleep(10000); // 10ms
+            struct timespec ts = {0, 10000000}; // 10ms in nanoseconds
+            nanosleep(&ts, NULL);
             fd = open(pipe_name, O_WRONLY);
         }
         if (fd == -1) {
