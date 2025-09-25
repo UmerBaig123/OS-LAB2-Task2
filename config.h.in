@@ -1,0 +1,22 @@
+/* Configuration header for Sieve of Eratosthenes project */
+#ifndef CONFIG_H
+#define CONFIG_H
+
+/* Platform identification */
+#define PLATFORM "@PLATFORM@"
+
+/* Feature support flags */
+#cmakedefine HAVE_UNISTD_H
+#cmakedefine HAVE_SYS_WAIT_H
+#cmakedefine HAVE_PTHREAD_H
+
+/* Function support flags */
+#cmakedefine HAVE_FORK
+#cmakedefine HAVE_PIPE
+#cmakedefine HAVE_MKFIFO
+
+/* Build configuration */
+#define CMAKE_BUILD_TYPE "@CMAKE_BUILD_TYPE@"
+#define CMAKE_C_COMPILER_ID "@CMAKE_C_COMPILER_ID@"
+
+#endif /* CONFIG_H */
