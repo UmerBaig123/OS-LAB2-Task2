@@ -21,7 +21,7 @@ find_package(Threads REQUIRED)
 if(WIN32)
     message(STATUS "Building for Windows")
     set(PLATFORM_LIBS "")
-    # Only build iterative and pthread versions on Windows
+    # Only build iterative version on Windows
     set(BUILD_UNIX_VERSIONS OFF)
 else()
     message(STATUS "Building for Unix/Linux")
@@ -55,18 +55,18 @@ endif()
 # Custom target to build all available implementations
 if(BUILD_UNIX_VERSIONS)
     add_custom_target(all_sieves 
-        DEPENDS sieve_iterative sieve_pthread sieve_fork_pipe sieve_named_pipe
+        DEPENDS sieve_iterative sieve_fork_pipe sieve_named_pipe
         COMMENT "Building all sieve implementations"
     )
 else()
     add_custom_target(all_sieves 
-        DEPENDS sieve_iterative sieve_pthread
+        DEPENDS sieve_iterative
         COMMENT "Building Windows-compatible sieve implementations"
     )
 endif()
 
 # Installation
-install(TARGETS sieve_iterative sieve_pthread 
+install(TARGETS sieve_iterative 
         RUNTIME DESTINATION bin)
 
 if(BUILD_UNIX_VERSIONS)
@@ -90,13 +90,6 @@ add_custom_target(run_iterative
     WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
 )
 
-add_custom_target(run_pthread
-    COMMAND sieve_pthread
-    DEPENDS sieve_pthread
-    COMMENT "Running pthread sieve implementation"
-    WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
-)
-
 if(BUILD_UNIX_VERSIONS)
     add_custom_target(run_fork_pipe
         COMMAND sieve_fork_pipe
@@ -117,18 +110,16 @@ endif()
 if(BUILD_UNIX_VERSIONS)
     add_custom_target(test_all
         COMMAND echo "Running iterative implementation:" && sieve_iterative && echo ""
-        COMMAND echo "Running pthread implementation:" && sieve_pthread && echo ""
         COMMAND echo "Running fork/pipe implementation:" && sieve_fork_pipe && echo ""
         COMMAND echo "Running named pipe implementation:" && sieve_named_pipe
-        DEPENDS sieve_iterative sieve_pthread sieve_fork_pipe sieve_named_pipe
+        DEPENDS sieve_iterative sieve_fork_pipe sieve_named_pipe
         COMMENT "Running all sieve implementations"
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     )
 else()
     add_custom_target(test_all
-        COMMAND echo "Running iterative implementation:" && sieve_iterative && echo ""
-        COMMAND echo "Running pthread implementation:" && sieve_pthread
-        DEPENDS sieve_iterative sieve_pthread
+        COMMAND echo "Running iterative implementation:" && sieve_iterative
+        DEPENDS sieve_iterative
         COMMENT "Running Windows-compatible sieve implementations"
         WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
     )
