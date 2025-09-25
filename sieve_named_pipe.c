@@ -35,62 +35,29 @@ char* create_named_pipe(int stage) {
     
     return pipe_name;
 }
-
-// Function to read numbers from named pipe
 int read_numbers_from_named_pipe(const char *pipe_name, NumberList *list) {
-    int fd = open(pipe_name, O_RDONLY);
-    if (fd == -1) {
-        perror("open read");
-        return 0;
+    int fd = open(pipe_name, O_RDWR);   // <- O_RDWR fixes the blocking
+    if (fd == -1) { perror("open read"); return 0; }
+
+    if (read(fd, &list->count, sizeof(int)) <= 0) { close(fd); return 0; }
+    if (list->count > 0) {
+        read(fd, list->numbers, list->count * sizeof(int));
     }
-    
-    // Read count first
-    if (read(fd, &list->count, sizeof(int)) <= 0) {
-        close(fd);
-        return 0;
-    }
-    
-    if (list->count <= 0) {
-        close(fd);
-        return 0; // Empty list signal
-    }
-    
-    // Read the actual numbers
-    int bytes_read = read(fd, list->numbers, list->count * sizeof(int));
     close(fd);
-    return bytes_read > 0;
+    return 1;
 }
 
-// Function to write numbers to named pipe
 void write_numbers_to_named_pipe(const char *pipe_name, NumberList *list) {
-    // Open in non-blocking mode first to avoid deadlock
-    int fd = open(pipe_name, O_WRONLY | O_NONBLOCK);
-    if (fd == -1) {
-        if (errno == ENXIO) {
-            // No reader yet, wait a bit and try blocking mode
-            sleep(1); // 1 second wait
-            fd = open(pipe_name, O_WRONLY);
-        }
-        if (fd == -1) {
-            perror("open write");
-            exit(1);
-        }
-    } else {
-        // Switch to blocking mode for actual I/O
-        int flags = fcntl(fd, F_GETFL);
-        fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
-    }
-    
-    // Write count first
+    int fd = open(pipe_name, O_RDWR);   // <- O_RDWR fixes the blocking
+    if (fd == -1) { perror("open write"); exit(1); }
+
     write(fd, &list->count, sizeof(int));
-    
-    // Write numbers if any
     if (list->count > 0) {
         write(fd, list->numbers, list->count * sizeof(int));
     }
-    
     close(fd);
 }
+
 
 // Filter function - removes multiples of prime
 NumberList* filter_numbers(NumberList *input, int prime) {
