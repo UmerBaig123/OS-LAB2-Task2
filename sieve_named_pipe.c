@@ -61,10 +61,22 @@ int read_numbers_from_named_pipe(const char *pipe_name, NumberList *list) {
 
 // Function to write numbers to named pipe
 void write_numbers_to_named_pipe(const char *pipe_name, NumberList *list) {
-    int fd = open(pipe_name, O_WRONLY);
+    // Open in non-blocking mode first to avoid deadlock
+    int fd = open(pipe_name, O_WRONLY | O_NONBLOCK);
     if (fd == -1) {
-        perror("open write");
-        exit(1);
+        if (errno == ENXIO) {
+            // No reader yet, wait a bit and try blocking mode
+            usleep(10000); // 10ms
+            fd = open(pipe_name, O_WRONLY);
+        }
+        if (fd == -1) {
+            perror("open write");
+            exit(1);
+        }
+    } else {
+        // Switch to blocking mode for actual I/O
+        int flags = fcntl(fd, F_GETFL);
+        fcntl(fd, F_SETFL, flags & ~O_NONBLOCK);
     }
     
     // Write count first
@@ -168,9 +180,6 @@ void sieve_named_pipe(int n) {
         char *input_pipe = create_named_pipe(stage * 2);
         char *output_pipe = create_named_pipe(stage * 2 + 1);
         
-        // Write current list to input pipe
-        write_numbers_to_named_pipe(input_pipe, current_list);
-        
         // Fork a process to handle this filtering stage
         pid_t pid = fork();
         if (pid == 0) {
@@ -181,6 +190,10 @@ void sieve_named_pipe(int n) {
             perror("fork");
             exit(1);
         }
+        
+        // Parent process - write current list to input pipe
+        // The child will be reading, so this should not block
+        write_numbers_to_named_pipe(input_pipe, current_list);
         
         // Wait for child to complete
         waitpid(pid, NULL, 0);

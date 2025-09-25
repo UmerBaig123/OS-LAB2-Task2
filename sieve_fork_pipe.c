@@ -92,30 +92,11 @@ void sieve_fork_pipe_sequential(int n) {
         initial->numbers[initial->count++] = i;
     }
     
-    int pipe_in[2], pipe_out[2];
-    pid_t pid;
+    NumberList *current_list = initial;
     int prime_count = 0;
     
-    // Create initial pipe
-    if (pipe(pipe_in) == -1) {
-        perror("pipe");
-        exit(1);
-    }
-    
-    // Send initial list to first process
-    write_numbers_to_pipe(pipe_in[1], initial);
-    close(pipe_in[1]);
-    
-    NumberList *current_list = (NumberList*)malloc(sizeof(NumberList));
-    current_list->numbers = (int*)malloc(1000 * sizeof(int));
-    
-    while (1) {
-        // Read from current pipe
-        if (!read_numbers_from_pipe(pipe_in[0], current_list) || current_list->count == 0) {
-            break;
-        }
-        
-        // Print the first prime
+    while (current_list->count > 0) {
+        // Get the first number as prime
         int prime = current_list->numbers[0];
         printf("%d ", prime);
         prime_count++;
@@ -126,17 +107,19 @@ void sieve_fork_pipe_sequential(int n) {
             break;
         }
         
-        // Create pipe for next stage
-        if (pipe(pipe_out) == -1) {
+        // Create pipe for filtering
+        int pipe_fd[2];
+        if (pipe(pipe_fd) == -1) {
             perror("pipe");
             exit(1);
         }
         
-        pid = fork();
+        pid_t pid = fork();
         if (pid == 0) {
-            // Child process - don't print, just filter and pass data
-            close(pipe_out[0]);
+            // Child process - filter the numbers
+            close(pipe_fd[0]); // Close read end
             
+            // Create remaining numbers (skip the prime)
             NumberList *remaining = (NumberList*)malloc(sizeof(NumberList));
             remaining->numbers = (int*)malloc(current_list->count * sizeof(int));
             remaining->count = current_list->count - 1;
@@ -145,35 +128,60 @@ void sieve_fork_pipe_sequential(int n) {
                 remaining->numbers[i-1] = current_list->numbers[i];
             }
             
+            // Filter out multiples of prime
             NumberList *filtered = filter_numbers(remaining, prime);
             
-            write_numbers_to_pipe(pipe_out[1], filtered);
+            // Send filtered results back
+            write_numbers_to_pipe(pipe_fd[1], filtered);
             
             free(remaining->numbers);
             free(remaining);
             free(filtered->numbers);
             free(filtered);
-            close(pipe_out[1]);
+            close(pipe_fd[1]);
             exit(0);
         } else if (pid < 0) {
             perror("fork");
             exit(1);
         }
         
-        close(pipe_in[0]); 
-        close(pipe_out[1]);
-        waitpid(pid, NULL, 0);
+        // Parent process
+        close(pipe_fd[1]); // Close write end
+        waitpid(pid, NULL, 0); // Wait for child to complete
         
-        pipe_in[0] = pipe_out[0];
+        // Read filtered results
+        NumberList *new_list = (NumberList*)malloc(sizeof(NumberList));
+        new_list->numbers = (int*)malloc(n * sizeof(int));
+        
+        if (read_numbers_from_pipe(pipe_fd[0], new_list) && new_list->count > 0) {
+            // Free old list if it's not the initial one
+            if (current_list != initial) {
+                free(current_list->numbers);
+                free(current_list);
+            }
+            current_list = new_list;
+        } else {
+            // No more numbers to process
+            free(new_list->numbers);
+            free(new_list);
+            break;
+        }
+        
+        close(pipe_fd[0]);
     }
     
     printf("\nTotal prime numbers found: %d\n", prime_count);
     
-    free(initial->numbers);
-    free(initial);
-    free(current_list->numbers);
-    free(current_list);
-    close(pipe_in[0]);
+    // Clean up
+    if (current_list == initial) {
+        free(initial->numbers);
+        free(initial);
+    } else {
+        free(initial->numbers);
+        free(initial);
+        free(current_list->numbers);
+        free(current_list);
+    }
 }
 
 int main() {
